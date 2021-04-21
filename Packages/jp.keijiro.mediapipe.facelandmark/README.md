@@ -1,7 +1,7 @@
 FaceLandmarkBarracuda
 =====================
 
-![gif](https://i.imgur.com/1n7pnZC.gif)
+![screenshot](https://i.imgur.com/qNRdiZpl.jpg)
 
 **FaceLandmarkBarracuda** is a facial landmark detector that runs the
 [MediaPipe face landmark detection] model on the [Unity Barracuda] neural
