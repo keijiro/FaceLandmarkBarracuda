@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Unity.Barracuda;
 using UnityEngine;
 
@@ -9,19 +8,9 @@ namespace MediaPipe.FaceLandmark {
 //
 public sealed class FaceLandmarkDetector : System.IDisposable
 {
-    #region Public accessors
+    #region Public methods/properties
 
     public const int VertexCount = 468;
-
-    public ComputeBuffer VertexBuffer
-      => _postBuffer;
-
-    public IEnumerable<Vector4> VertexArray
-      => _postRead ? _postReadCache : UpdatePostReadCache();
-
-    #endregion
-
-    #region Public methods
 
     public FaceLandmarkDetector(ResourceSet resources)
       => AllocateObjects(resources);
@@ -32,21 +21,24 @@ public sealed class FaceLandmarkDetector : System.IDisposable
     public void ProcessImage(Texture image)
       => RunModel(image);
 
-    #endregion
+    public GraphicsBuffer VertexBuffer
+      => _output;
 
-    #region Compile-time constants
-
-    // Input image size (defined by the model)
-    const int ImageSize = 192;
+    public System.ReadOnlySpan<Vector4> VertexArray
+      => _readCache.Cached;
 
     #endregion
 
     #region Private objects
 
+    // Input image size (defined by the model)
+    const int ImageSize = 192;
+
     ResourceSet _resources;
-    (Tensor tensor, ComputeTensorData data) _preprocess;
-    ComputeBuffer _postBuffer;
     IWorker _worker;
+    (Tensor tensor, ComputeTensorData data) _preprocess;
+    GraphicsBuffer _output;
+    ReadCache _readCache;
 
     void AllocateObjects(ResourceSet resources)
     {
@@ -71,7 +63,10 @@ public sealed class FaceLandmarkDetector : System.IDisposable
 #endif
 
         // Output buffer
-        _postBuffer = new ComputeBuffer(VertexCount, sizeof(float) * 4);
+        _output = BufferUtil.NewStructured<Vector4>(VertexCount);
+
+        // Read cache
+        _readCache = new ReadCache(_output);
     }
 
     void DeallocateObjects()
@@ -82,8 +77,8 @@ public sealed class FaceLandmarkDetector : System.IDisposable
         _preprocess.tensor?.Dispose();
         _preprocess = (null, null);
 
-        _postBuffer?.Dispose();
-        _postBuffer = null;
+        _output?.Dispose();
+        _output = null;
     }
 
     #endregion
@@ -111,26 +106,12 @@ public sealed class FaceLandmarkDetector : System.IDisposable
         var post = _resources.postprocess;
         var tempRT = _worker.CopyOutputToTempRT(1, VertexCount * 3);
         post.SetTexture(0, "_Tensor", tempRT);
-        post.SetBuffer(0, "_Vertices", _postBuffer);
+        post.SetBuffer(0, "_Vertices", _output);
         post.Dispatch(0, VertexCount / 52, 1, 1);
         RenderTexture.ReleaseTemporary(tempRT);
 
-        // Read cache invalidation
-        _postRead = false;
-    }
-
-    #endregion
-
-    #region GPU to CPU readback
-
-    Vector4[] _postReadCache = new Vector4[VertexCount];
-    bool _postRead;
-
-    Vector4[] UpdatePostReadCache()
-    {
-        _postBuffer.GetData(_postReadCache, 0, 0, VertexCount);
-        _postRead = true;
-        return _postReadCache;
+        // Cache data invalidation
+        _readCache.Invalidate();
     }
 
     #endregion
