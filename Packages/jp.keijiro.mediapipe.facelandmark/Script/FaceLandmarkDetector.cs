@@ -24,10 +24,7 @@ public sealed class FaceLandmarkDetector : System.IDisposable
     #region Public methods
 
     public FaceLandmarkDetector(ResourceSet resources)
-    {
-        _resources = resources;
-        AllocateObjects();
-    }
+      => AllocateObjects(resources);
 
     public void Dispose()
       => DeallocateObjects();
@@ -47,28 +44,46 @@ public sealed class FaceLandmarkDetector : System.IDisposable
     #region Private objects
 
     ResourceSet _resources;
-    ComputeBuffer _preBuffer;
+    (Tensor tensor, ComputeTensorData data) _preprocess;
     ComputeBuffer _postBuffer;
     IWorker _worker;
 
-    void AllocateObjects()
+    void AllocateObjects(ResourceSet resources)
     {
-        var model = ModelLoader.Load(_resources.model);
-        _preBuffer = new ComputeBuffer(ImageSize * ImageSize * 3, sizeof(float));
+        // NN model
+        var model = ModelLoader.Load(resources.model);
+
+        // Private objects
+        _resources = resources;
+        _worker = model.CreateWorker(WorkerFactory.Device.GPU);
+
+        // Preprocessing buffer
+#if BARRACUDA_4_0_0_OR_LATER
+        var inputShape = new TensorShape(1, 3, ImageSize, ImageSize);
+        _preprocess.data = new ComputeTensorData(inputShape, "input", false);
+        _preprocess.tensor = TensorFloat.Zeros(inputShape);
+        _preprocess.tensor.AttachToDevice(_preprocess.data);
+#else
+        var inputShape = new TensorShape(1, ImageSize, ImageSize, 3);
+        _preprocess.data = new ComputeTensorData
+          (inputShape, "input", ComputeInfo.ChannelsOrder.NHWC, false);
+        _preprocess.tensor = new Tensor(inputShape, _preprocess.data);
+#endif
+
+        // Output buffer
         _postBuffer = new ComputeBuffer(VertexCount, sizeof(float) * 4);
-        _worker = model.CreateWorker();
     }
 
     void DeallocateObjects()
     {
-        _preBuffer?.Dispose();
-        _preBuffer = null;
+        _worker?.Dispose();
+        _worker = null;
+
+        _preprocess.tensor?.Dispose();
+        _preprocess = (null, null);
 
         _postBuffer?.Dispose();
         _postBuffer = null;
-
-        _worker?.Dispose();
-        _worker = null;
     }
 
     #endregion
@@ -77,15 +92,20 @@ public sealed class FaceLandmarkDetector : System.IDisposable
 
     void RunModel(Texture source)
     {
+#if BARRACUDA_4_0_0_OR_LATER
+        const int PrePassNum = 1;
+#else
+        const int PrePassNum = 0;
+#endif
+
         // Preprocessing
         var pre = _resources.preprocess;
-        pre.SetTexture(0, "_Texture", source);
-        pre.SetBuffer(0, "_Tensor", _preBuffer);
-        pre.Dispatch(0, ImageSize / 8, ImageSize / 8, 1);
+        pre.SetTexture(PrePassNum, "_Texture", source);
+        pre.SetBuffer(PrePassNum, "_Tensor", _preprocess.data.buffer);
+        pre.Dispatch(PrePassNum, ImageSize / 8, ImageSize / 8, 1);
 
         // Run the BlazeFace model.
-        using (var tensor = new Tensor(1, ImageSize, ImageSize, 3, _preBuffer))
-            _worker.Execute(tensor);
+        _worker.Execute(_preprocess.tensor);
 
         // Postprocessing
         var post = _resources.postprocess;
