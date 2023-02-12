@@ -1,17 +1,15 @@
 using UnityEngine;
 using UnityEngine.UI;
+using Klak.TestTools;
 using MediaPipe.FaceLandmark;
-
-namespace MediaPipe {
 
 public sealed class Visualizer : MonoBehaviour
 {
     #region Editable attributes
 
-    [SerializeField] WebcamInput _webcam = null;
-    [SerializeField] RawImage _previewUI = null;
-    [Space]
+    [SerializeField] ImageSource _source = null;
     [SerializeField] ResourceSet _resources = null;
+    [SerializeField] RawImage _previewUI = null;
     [SerializeField] Mesh _template = null;
     [SerializeField] Shader _shader = null;
 
@@ -41,10 +39,10 @@ public sealed class Visualizer : MonoBehaviour
     void LateUpdate()
     {
         // Face landmark detection
-        _detector.ProcessImage(_webcam.Texture);
+        _detector.ProcessImage(_source.Texture);
 
         // UI update
-        _previewUI.texture = _webcam.Texture;
+        _previewUI.texture = _source.Texture;
     }
 
     void OnRenderObject()
@@ -62,5 +60,3 @@ public sealed class Visualizer : MonoBehaviour
 
     #endregion
 }
-
-} // namespace MediaPipe
