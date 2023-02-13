@@ -1,5 +1,7 @@
 using Unity.Barracuda;
 using UnityEngine;
+using Klak.NNUtils;
+using Klak.NNUtils.Extensions;
 
 namespace MediaPipe.FaceLandmark {
 
@@ -36,9 +38,9 @@ public sealed class FaceLandmarkDetector : System.IDisposable
 
     ResourceSet _resources;
     IWorker _worker;
-    (Tensor tensor, ComputeTensorData data) _preprocess;
+    ImagePreprocess _preprocess;
     GraphicsBuffer _output;
-    ReadCache _readCache;
+    BufferReader<Vector4> _readCache;
 
     void AllocateObjects(ResourceSet resources)
     {
@@ -50,23 +52,13 @@ public sealed class FaceLandmarkDetector : System.IDisposable
         _worker = model.CreateWorker(WorkerFactory.Device.GPU);
 
         // Preprocessing buffer
-#if BARRACUDA_4_0_0_OR_LATER
-        var inputShape = new TensorShape(1, 3, ImageSize, ImageSize);
-        _preprocess.data = new ComputeTensorData(inputShape, "input", false);
-        _preprocess.tensor = TensorFloat.Zeros(inputShape);
-        _preprocess.tensor.AttachToDevice(_preprocess.data);
-#else
-        var inputShape = new TensorShape(1, ImageSize, ImageSize, 3);
-        _preprocess.data = new ComputeTensorData
-          (inputShape, "input", ComputeInfo.ChannelsOrder.NHWC, false);
-        _preprocess.tensor = new Tensor(inputShape, _preprocess.data);
-#endif
+        _preprocess = new ImagePreprocess(ImageSize, ImageSize, nchwFix: true);
 
         // Output buffer
         _output = BufferUtil.NewStructured<Vector4>(VertexCount);
 
         // Read cache
-        _readCache = new ReadCache(_output);
+        _readCache = new BufferReader<Vector4>(_output, VertexCount);
     }
 
     void DeallocateObjects()
@@ -74,8 +66,8 @@ public sealed class FaceLandmarkDetector : System.IDisposable
         _worker?.Dispose();
         _worker = null;
 
-        _preprocess.tensor?.Dispose();
-        _preprocess = (null, null);
+        _preprocess?.Dispose();
+        _preprocess = null;
 
         _output?.Dispose();
         _output = null;
@@ -87,31 +79,20 @@ public sealed class FaceLandmarkDetector : System.IDisposable
 
     void RunModel(Texture source)
     {
-#if BARRACUDA_4_0_0_OR_LATER
-        const int PrePassNum = 1;
-#else
-        const int PrePassNum = 0;
-#endif
-
         // Preprocessing
-        var pre = _resources.preprocess;
-        pre.SetTexture(PrePassNum, "_Texture", source);
-        pre.SetBuffer(PrePassNum, "_Tensor", _preprocess.data.buffer);
-        pre.Dispatch(PrePassNum, ImageSize / 8, ImageSize / 8, 1);
+        _preprocess.Dispatch(source, _resources.preprocess);
 
         // Run the BlazeFace model.
-        _worker.Execute(_preprocess.tensor);
+        _worker.Execute(_preprocess.Tensor);
 
         // Postprocessing
         var post = _resources.postprocess;
-        var tempRT = _worker.CopyOutputToTempRT(1, VertexCount * 3);
-        post.SetTexture(0, "_Tensor", tempRT);
+        post.SetBuffer(0, "_Tensor", _worker.PeekOutputBuffer());
         post.SetBuffer(0, "_Vertices", _output);
-        post.Dispatch(0, VertexCount / 52, 1, 1);
-        RenderTexture.ReleaseTemporary(tempRT);
+        post.DispatchThreads(0, VertexCount, 1, 1);
 
         // Cache data invalidation
-        _readCache.Invalidate();
+        _readCache.InvalidateCache();
     }
 
     #endregion
